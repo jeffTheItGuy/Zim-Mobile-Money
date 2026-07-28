@@ -1,0 +1,174 @@
+@startuml
+skinparam linetype ortho
+skinparam class {
+    BorderThickness 1
+    ArrowColor #424242
+    FontColor #212121
+}
+
+' ===== USERS (KYC merged — no separate table) =====
+entity users #E3F2FD {
+    * user_id : UUID <<PK>>
+    --
+    * phone_number : VARCHAR(15) <<UQ>>
+    * pin_hash : VARCHAR(255)
+    * first_name : VARCHAR(100)
+    * last_name : VARCHAR(100)
+    * national_id : VARCHAR(50) <<UQ>>
+    * id_document_path : VARCHAR(500)
+    * kyc_level : INT <<DF 1>>
+    * kyc_verified_at : TIMESTAMP
+    * user_type : ENUM('CUSTOMER','AGENT','MERCHANT','ADMIN')
+    * status : ENUM('ACTIVE','SUSPENDED','CLOSED')
+    * created_at : TIMESTAMP
+    * updated_at : TIMESTAMP
+}
+
+' ===== WALLETS =====
+entity wallets #E8F5E9 {
+    * wallet_id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK>>
+    * currency_code : CHAR(3)
+    * balance : DECIMAL(18,2)
+    * daily_limit : DECIMAL(18,2)
+    * monthly_limit : DECIMAL(18,2)
+    * is_active : BOOLEAN
+    * created_at : TIMESTAMP
+    --
+    <<UQ>> (user_id, currency_code)
+}
+
+' ===== TRANSACTIONS (Fees & failures merged) =====
+entity transactions #FFEBEE {
+    * transaction_id : UUID <<PK>>
+    --
+    * reference_number : VARCHAR(50) <<UQ>>
+    * idempotency_key : VARCHAR(100) <<UQ>>
+    * transaction_type : ENUM('CASH_IN','CASH_OUT','TRANSFER','PAYMENT','AIRTIME','BILL_PAY','REFUND')
+    * status : ENUM('PENDING','COMPLETED','FAILED','REVERSED')
+    * amount : DECIMAL(18,2)
+    * fee_amount : DECIMAL(18,2) <<DF 0>>
+    * agent_commission : DECIMAL(18,2) <<DF 0>>
+    * currency_code : CHAR(3)
+    * sender_wallet_id : UUID <<FK>>
+    * receiver_wallet_id : UUID <<FK>>
+    * agent_id : UUID <<FK>>
+    * merchant_id : UUID <<FK>>
+    * source_channel : ENUM('USSD','MOBILE_APP','AGENT_APP','WEB')
+    * description : TEXT
+    * external_reference : VARCHAR(100)
+    * failure_reason : VARCHAR(255)
+    * reversed_at : TIMESTAMP
+    * created_at : TIMESTAMP
+    * completed_at : TIMESTAMP
+}
+
+' ===== LEDGER (Non-negotiable for RBZ audit) =====
+entity ledger_entries #E0F7FA {
+    * entry_id : UUID <<PK>>
+    --
+    * transaction_id : UUID <<FK>>
+    * wallet_id : UUID <<FK>>
+    * entry_type : ENUM('DEBIT','CREDIT')
+    * amount : DECIMAL(18,2)
+    * running_balance : DECIMAL(18,2)
+    * description : TEXT
+    * created_at : TIMESTAMP
+}
+
+' ===== AGENTS (Simplified — no hierarchy yet) =====
+entity agents #FFF3E0 {
+    * agent_id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK>> <<UQ>>
+    * agent_code : VARCHAR(20) <<UQ>>
+    * business_name : VARCHAR(200)
+    * territory : VARCHAR(100)
+    * commission_rate : DECIMAL(5,4)
+    * float_balance : DECIMAL(18,2)
+    * status : ENUM('ACTIVE','SUSPENDED')
+    * created_at : TIMESTAMP
+}
+
+' ===== AGENT FLOAT LOG (Transactional — replaces daily snapshots) =====
+entity agent_float_logs #FFF3E0 {
+    * log_id : UUID <<PK>>
+    --
+    * agent_id : UUID <<FK>>
+    * transaction_id : UUID <<FK>>
+    * movement_type : ENUM('TOP_UP','CASH_IN','CASH_OUT','SETTLEMENT')
+    * amount : DECIMAL(18,2)
+    * running_float : DECIMAL(18,2)
+    * created_at : TIMESTAMP
+}
+
+' ===== MERCHANTS (Minimal viable) =====
+entity merchants #E0F2F1 {
+    * merchant_id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK>> <<UQ>>
+    * business_name : VARCHAR(200)
+    * settlement_wallet_id : UUID <<FK>>
+    * webhook_url : VARCHAR(500)
+    * status : ENUM('ACTIVE','SUSPENDED')
+    * created_at : TIMESTAMP
+}
+
+' ===== AUDIT LOGS (Text-based — no JSONB) =====
+entity audit_logs #F3E5F5 {
+    * log_id : BIGSERIAL <<PK>>
+    --
+    * user_id : UUID <<FK>>
+    * action : VARCHAR(100)
+    * details : TEXT
+    * ip_address : VARCHAR(45)
+    * created_at : TIMESTAMP
+}
+
+' ===== RELATIONSHIPS =====
+users ||--o{ wallets : owns
+users ||--o| agents : becomes
+users ||--o| merchants : registers_as
+users ||--o{ audit_logs : generates
+
+wallets ||--o{ transactions : sends
+wallets ||--o{ transactions : receives
+wallets ||--o{ ledger_entries : posts
+
+agents ||--o{ transactions : processes
+agents ||--o{ agent_float_logs : tracks
+
+merchants ||--o{ transactions : receives
+
+transactions ||--o{ ledger_entries : splits_into
+transactions ||--o{ agent_float_logs : affects
+
+note right of transactions
+  **Zim-Optimized Rules**
+  - CHECK (amount > 0)
+  - CHECK (sender_wallet_id != receiver_wallet_id)
+  - fee_amount + agent_commission <= amount
+  - idempotency_key prevents double-posting
+  - failure_reason populated on FAILED status
+  - No separate fees table — denormalized for simplicity
+end note
+
+note right of ledger_entries
+  **RBZ / Financial Integrity**
+  - Every COMPLETED txn = 2+ entries
+  - SUM(debits) == SUM(credits) per txn
+  - running_balance immutable after insert
+  - This is your regulatory lifeline — keep it simple but correct
+end note
+
+note bottom of users
+  **Zimbabwe Context**
+  - kyc_level: 1=phone only, 2=ID verified, 3=address proof
+  - USSD-first: minimal data per screen
+  - Agent network handles cash-in/cash-out
+  - Multi-currency: USD + ZIG primarily
+  - DECIMAL(18,2) — sufficient for Zim dollar scale
+  - No JSONB/INET — easier to query with basic tools
+end note
+@enduml

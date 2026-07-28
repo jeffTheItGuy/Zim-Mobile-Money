@@ -1,0 +1,79 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: momo-postgres
+    environment:
+      POSTGRES_DB: momo_db
+      POSTGRES_USER: momo
+      POSTGRES_PASSWORD: ${DB_PASS:-momo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U momo -d momo_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - momo-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: momo-redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - momo-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: momo-backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: momo_db
+      DB_USER: momo
+      DB_PASS: ${DB_PASS:-momo}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-very-long-secret-key-at-least-256-bits}
+      SPRING_PROFILES_ACTIVE: prod
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - momo-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: momo-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - momo-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  momo-network:
+    driver: bridge
